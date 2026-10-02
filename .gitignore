@@ -7,3 +7,6 @@ ACME
 archive
 CLAUDE.md
 c128_port_plan.md
+Thumbs.db
+__pycache__/basic_tokens.cpython-313.pyc
+scripts/__pycache__/basic_tokens.cpython-313.pyc
