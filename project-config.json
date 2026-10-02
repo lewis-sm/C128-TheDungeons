@@ -1,0 +1,14 @@
+{
+    "name": "thedungeonsc128",
+    "description": "The_Dungeons_c128",
+    "machine": "c128",
+    "toolkit": "acme",
+    "sources": [
+        "src/TheDungeons.asm"
+    ],
+    "build": "debug",
+    "definitions": [],
+    "includes": [],
+    "args": [],
+    "compiler": "./ACME/acme.exe"
+}

@@ -1,0 +1,26 @@
+# Fresh game -> Fighter -> skip shop -> navigate Room1 -> Room5 (E) -> Room3 (S).
+# See Dungeons__The_map_c64.png for the room graph. Room numbers are literal
+# R% values (PEEK(MS+R%) picks the monster), so this also doubles as a
+# template for reaching any other room.
+WAIT 500
+SHOT 00-title
+N
+ENTER
+WAIT 1000
+SHOT 01-quit-file-answered
+F
+ENTER
+WAIT 1500
+SHOT 02-class-selected
+0
+ENTER
+WAIT 1500
+SHOT 03-shop-skipped-room1
+M
+E
+WAIT 1500
+SHOT 04-room5
+M
+S
+WAIT 1500
+SHOT 05-room3

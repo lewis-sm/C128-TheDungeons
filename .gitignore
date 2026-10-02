@@ -1,0 +1,9 @@
+# git ignores
+*~
+build
+.vscode/c_cpp_properties.json
+.vscode/settings.json
+ACME
+archive
+CLAUDE.md
+c128_port_plan.md

@@ -1,0 +1,153 @@
+; ============================================================
+; ml_entry_c128.asm
+; C128 native-mode equivalent of ml_entry.asm. Points BASIC's
+; TXTTAB at the game program, then queues "RUN"+CR into the real
+; C128 keyboard buffer and returns normally - letting BASIC's own,
+; already-proven-correct "process typed input" loop start the
+; program exactly as if the user had typed RUN and pressed Return.
+;
+; APPROACH HISTORY (why this file looks nothing like its earlier
+; versions): the first several rounds tried to manually replicate
+; what happens inside BASIC ROM when RUN is typed - setting CLR,
+; program-line relinking, CURLIN/TXTPTR, and jumping into GONE's
+; internal dispatch logic directly. That approach uncovered a lot
+; of real, confirmed C128 ROM behavior along the way (documented in
+; the plan doc and in constants_c128.asm's comments - the zero-page
+; +2 shift, VARTAB living in bank 1, CLR's real address and its
+; return-address-preserving stack reset, GONE's real entry shape,
+; RUN's actual dispatch-table-derived entry point, etc) but each
+; fix uncovered a new gap, because GONE's internals turned out to
+; have more interdependent state (RUN_MODE_FLAG, the BASIC_RUN_RESET
+; and BASIC_EDITOR_RESET calls, exact TXTPTR conventions) than could
+; be reliably reconstructed from outside. The breaking point: one of
+; those calls (BASIC_EDITOR_RESET, $A1A7) turned out to lead directly
+; into BASIC's own "SYNTAX ERROR" message-printing routine when
+; called outside its real context - actively harmful, not just
+; unhelpful, and a sign the reconstruction approach had hit its
+; limit rather than just needing one more fix.
+;
+; This version sidesteps all of that: rather than reconstruct RUN's
+; internals, it drives BASIC's real, unmodified input path. The
+; keyboard buffer location ($034A-$0353) and count ($D0) were found
+; empirically in VICE (VICE's own "hunt" memory-search command
+; against known typed characters, using a SLEEP command to keep the
+; input loop from draining the buffer before it could be inspected) -
+; not assumed from C64 (C64's equivalent is $0277/$C6, both
+; different addresses on C128). The $034A buffer location also has
+; independent confirmation: Mapping the Commodore 128 mentions "the
+; standard keyboard buffer at 842-851/$034A-$0353" in an unrelated
+; entry (XMAX, $0A20) found much earlier in this project's research.
+;
+; Differences from the C64 build's ml_entry.asm that still apply:
+;   1. Zero-page addresses are +2 from C64 (TXTTAB $2D/$2E here vs
+;      $2B/$2C on C64) - confirmed against Mapping the Commodore 128.
+;   2. VARTAB points into bank 1, a completely separate 64K RAM
+;      block from the program text in bank 0 - unlike the C64
+;      version, there's no need to place variables "after" the
+;      program to avoid a collision.
+;   3. No LINKPRG call. tools/tokenizer.py already writes correct
+;      absolute line-link addresses at build time for whatever
+;      --base it's given, provided that value matches
+;      BASIC_PROGRAM_START exactly - there is nothing for a runtime
+;      relink pass to fix. (This finding predates the approach
+;      change above and remains true regardless of it.)
+;
+; NOT handled here, and deliberately so: the $12FD BASIC-IRQ disable
+; and the CHAREN setup (POKE 216,255 / direct $01 POKE) both need to
+; happen on every RUN, not just this one-time hand-off - ml_entry_c128
+; only runs once, at initial load, but the queued "RUN" here will
+; trigger BASIC's normal RUN processing on every restart too (a
+; manual RUN typed later behaves identically). Both POKEs still
+; belong in the BASIC program's own first line(s), not here.
+;
+; Confirmed via VICE: TXTTAB/zero-byte/VARTAB setup is correct (LIST
+; and manually-typed RUN both work perfectly after this stub runs).
+; The keyboard-buffer-injection portion is NOT yet independently
+; confirmed working - next empirical test.
+; ============================================================
+
+!source "src/include/constants_c128.acme"
+
+        * = ML_ENTRY_STUB_START
+
+ml_entry_c128:
+        ; --- Point TXTTAB at the game program ---
+        ldx #<BASIC_PROGRAM_START
+        stx TXTTAB_LO
+        ldx #>BASIC_PROGRAM_START
+        stx TXTTAB_HI
+
+        ; BASIC requires program text to be preceded by a zero
+        ; byte. Confirmed requirement (Mapping the C128, TXTTAB
+        ; entry).
+        ldx #$00
+        stx BASIC_PROGRAM_START - 1
+
+        ; --- Point VARTAB at its bank-1 default ---
+        ; $0400 is where BASIC 7.0's own cold-start sequence
+        ; already puts it. Setting it explicitly rather than
+        ; trusting it's still there is cheap insurance against
+        ; whatever ran before this (monitor session, prior LOAD,
+        ; etc.) having left it somewhere else. RUN's own real
+        ; processing (triggered below) calls CLR itself, which
+        ; derives ARYTAB/STREND from this - no need to set those.
+        stx VARTAB_LO           ; X is still $00 from above
+        ldx #$04
+        stx VARTAB_HI
+
+        ; --- Restore MAX_MEM_0 (top-of-BASIC-memory pointer) ---
+        ; Confirmed via a live watchpoint investigation: our own PRG
+        ; build is a single contiguous file spanning GAME_STATE_START
+        ; ($0B00) through BASIC_PROGRAM_START and beyond. The gap
+        ; between LOOKUP_TABLE_START's end and SPRITE_POOL_START
+        ; ($1300) - which ACME zero-fills to keep the file one
+        ; continuous block - fully contains $1200-$121F, the
+        ; permanently off-limits zero-page-adjacent zone (§2 of the
+        ; plan doc). We never put our own data there, but LOADing the
+        ; file still writes zeros across it unconditionally, wiping
+        ; MAX_MEM_0 before this stub even runs - confirmed via
+        ; "m 1212 1213" showing $0000 immediately after LOAD, before
+        ; SYS was ever typed. Everything else in that zone is
+        ; naturally restored downstream (TEXT_TOP by BASIC_RELINK
+        ; below; CONT/error state by CLR or by the first line
+        ; executing) - MAX_MEM_0 specifically is not, per Mapping the
+        ; C128's own description (only the cold-start sequence sets
+        ; it). Restored here to $FF00, the documented cold-start
+        ; value. Not yet independently confirmed as the complete fix -
+        ; next empirical test.
+        ldx #$00
+        stx MAX_MEM_0_LO
+        ldx #$FF
+        stx MAX_MEM_0_HI
+
+        ; --- Queue "RUN"<CR> into the real keyboard buffer ---
+        ; $034A-$0353, confirmed empirically in VICE (see header
+        ; comment above) - genuinely different from C64's $0277.
+        ; Holds real PETSCII/ASCII, confirmed via the same test.
+        ldx #$52                ; 'R'
+        stx KEYBOARD_BUFFER + 0
+        ldx #$55                ; 'U'
+        stx KEYBOARD_BUFFER + 1
+        ldx #$4E                ; 'N'
+        stx KEYBOARD_BUFFER + 2
+        ldx #$0D                ; carriage return
+        stx KEYBOARD_BUFFER + 3
+
+        ; --- Tell the input loop 4 characters are waiting ---
+        ; $D0, confirmed empirically alongside the buffer itself
+        ; (also matches a fan-documented "POKE 208,0 clears the
+        ; keyboard buffer" tip, consistent with $D0=208 being the
+        ; count).
+        ldx #$04
+        stx KEYBOARD_COUNT
+
+        ; --- Return normally to SYS's own caller ---
+        ; No CLR, no RELINK, no jump into GONE - BASIC's real input
+        ; loop (reached normally once this RTS unwinds back through
+        ; SYS's own processing and prints READY) will see "RUN" and
+        ; a carriage return waiting in the keyboard buffer and
+        ; process them exactly as if typed, using its own complete,
+        ; already-proven-correct internal logic rather than a
+        ; hand-reconstructed approximation of it.
+        rts
+ml_entry_c128_end:

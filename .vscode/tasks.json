@@ -1,0 +1,36 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "vs64",
+            "action": "build",
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            },
+            "label": "build project"
+        },
+        {
+            "type": "shell",
+            "label": "build d64 image",
+            "dependsOn": ["build project"],
+            "dependsOrder": "sequence",
+            "command": "powershell.exe",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-Command",
+                "$c1541 = Join-Path (Split-Path '${config:vs64.viceExecutable}') 'c1541.exe'; $d64 = '${workspaceFolder}\\build\\thedungeonsc128.d64'; $prg = '${workspaceFolder}\\build\\thedungeonsc128.prg'; & $c1541 -format 'thedungeons,08' d64 $d64 -attach $d64 -write $prg game; exit $LASTEXITCODE"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared"
+            }
+        }
+    ]
+}

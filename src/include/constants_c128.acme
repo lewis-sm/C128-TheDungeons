@@ -1,0 +1,489 @@
+; ============================================================
+; constants_c128.asm
+; The Dungeons - C128 native-mode port
+; C128-specific addresses, confirmed against *Mapping the
+; Commodore 128* (Cowper, COMPUTE! 1986) unless noted otherwise.
+; Companion to constants.asm (the C64 build) - kept separate so
+; both targets remain buildable from the same source tree.
+; ============================================================
+
+; Include guard: this file is sourced from multiple places (directly
+; from build/test harnesses that need e.g. GAME_STATE_START before
+; ml_entry_c128.asm runs, AND from within ml_entry_c128.asm itself,
+; which needs to stay self-contained/standalone-includable). Without
+; this, a harness sourcing both would risk duplicate-definition
+; errors. Uses ACME's real conditional-assembly syntax (brace-delimited
+; !ifndef X { ... } - confirmed directly from ACME's own example source,
+; correcting an earlier version of this file that used a mismatched
+; !ifndef/!endif pattern from a different assembler family, which
+; failed to build with "Unknown pseudo opcode" on the !endif line).
+!ifndef CONSTANTS_C128_INCLUDED {
+CONSTANTS_C128_INCLUDED = 1
+
+; --- BASIC zero page (bank 0/1 pointers used by ml_entry_c128) ---
+; Every one of these is +2 from its C64 equivalent - confirmed,
+; not inferred (see plan doc section 2).
+TXTTAB_LO   = $2D      ; start-of-BASIC-program pointer, low byte (bank 0)
+TXTTAB_HI   = $2E      ; start-of-BASIC-program pointer, high byte (bank 0)
+VARTAB_LO   = $2F      ; start-of-variables pointer, low byte (bank 1!)
+VARTAB_HI   = $30      ; start-of-variables pointer, high byte (bank 1!)
+; ARYTAB ($31/$32) and STREND ($33/$34) are NOT poked directly -
+; CLR ($51F3) sets both from whatever VARTAB currently holds, so
+; setting VARTAB alone is sufficient. Listed here for reference:
+ARYTAB_LO   = $31
+ARYTAB_HI   = $32
+STREND_LO   = $33
+STREND_HI   = $34
+TXTPTR_LO   = $3D      ; CHRGET pointer - confirmed directly (book states
+TXTPTR_HI   = $3E      ; this explicitly; also independently confirmed
+                        ; via live disassembly of CONT, d 5a60 5a81).
+                        ; SUPERSEDED - not touched by the current
+                        ; ml_entry_c128.asm, which queues "RUN"+CR into
+                        ; the real keyboard buffer instead of manually
+                        ; positioning TXTPTR and jumping into GONE. Kept
+                        ; defined since it's still real, confirmed ROM
+                        ; state, and the investigation that led here
+                        ; (see the SUPERSEDED section below) is real
+                        ; project history even though the current
+                        ; approach doesn't use it directly.
+CURLIN_LO   = $3B      ; current-line-number - originally inferred from
+CURLIN_HI   = $3C      ; the +2 shift pattern, now independently
+                        ; confirmed the same way as TXTPTR (CONT's
+                        ; disassembly copies OLDLIN here directly).
+                        ; SUPERSEDED - same status as TXTPTR above, not
+                        ; touched by the current ml_entry_c128.asm.
+
+; --- MAX_MEM_0 (top-of-BASIC-memory pointer, CURRENTLY USED) ---
+; NOT zero page - lives at $1212/$1213, inside the "permanently off-
+; limits" zone from §2 of the plan doc (CONT bookkeeping, error/line
+; state, RND seed, etc. - all things our own CLR/RELINK/RUN sequence
+; either respects or naturally re-establishes downstream). MAX_MEM_0
+; is the one exception: found via a live watchpoint investigation to
+; be getting zeroed by our OWN PRG's build structure (the file spans
+; contiguously from GAME_STATE_START through BASIC_PROGRAM_START,
+; and ACME's zero-fill for the gap between LOOKUP_TABLE_START and
+; SPRITE_POOL_START happens to fully contain $1200-$121F) - confirmed
+; via "m 1212 1213" showing $0000 immediately after LOAD, before SYS
+; was ever run. Nothing downstream naturally restores this one
+; specifically (per Mapping the C128: only the cold-start sequence
+; sets it - not CLR, not NEW). Restored explicitly in ml_entry_c128
+; to $FF00, the documented cold-start value.
+MAX_MEM_0_LO = $1212
+MAX_MEM_0_HI = $1213
+
+; --- Keyboard buffer injection (CURRENTLY USED by ml_entry_c128) ---
+; Confirmed empirically in VICE via VICE's own memory-search ("hunt")
+; command against known typed characters (a SLEEP command was needed
+; to stop the READY-prompt input loop from draining the buffer before
+; it could be inspected) - not assumed from C64, which uses different
+; addresses ($0277/$C6) for both. $034A also has independent
+; confirmation: Mapping the Commodore 128 mentions "the standard
+; keyboard buffer at 842-851/$034A-$0353" in an unrelated entry
+; (XMAX, $0A20) found earlier in this project's research, before this
+; specific need for it arose.
+KEYBOARD_BUFFER = $034A ; holds real PETSCII/ASCII (confirmed via the
+                        ; same empirical test) - up to 10 characters,
+                        ; $034A-$0353.
+KEYBOARD_COUNT  = $D0   ; number of characters currently waiting.
+                        ; Also matches a fan-documented "POKE 208,0
+                        ; clears the keyboard buffer" C128 tip,
+                        ; consistent with $D0=208 being the count.
+
+; ============================================================
+; SUPERSEDED - the constants below (BASIC_CLR through
+; BASIC_RUN_RESET) were used by earlier versions of ml_entry_c128.asm
+; that tried to manually reconstruct RUN's internal ROM logic (CLR,
+; program relinking, CURLIN/TXTPTR, jumping into GONE directly).
+; That approach uncovered real, confirmed C128 ROM behavior - the
+; addresses and comments below are accurate findings, not wrong
+; guesses - but ultimately hit a wall: BASIC_EDITOR_RESET turned out
+; to lead directly into BASIC's own SYNTAX ERROR message routine when
+; called outside its real context, a sign the reconstruction had
+; reached its limit rather than just needing one more fix. The
+; current ml_entry_c128.asm instead queues "RUN"+CR into the real
+; keyboard buffer (above) and lets BASIC's own unmodified input loop
+; do this work, sidestepping the whole reconstruction. Kept here as
+; documented history / in case this approach is ever revisited.
+; ============================================================
+
+; --- BASIC 7.0 ROM entry points (SUPERSEDED - see above) ---
+; Confirmed via Mapping the C128 AND, for the two zero-page
+; addresses above, via live ROM disassembly of CONT (d 5a60 5a81)
+; showing it copy OLDTXT/OLDLIN directly into $3D/$3E and $3B/$3C -
+; independent confirmation those really are TXTPTR/CURLIN.
+;
+; No LINKPRG call: tools/tokenizer.py already computes correct
+; absolute line-link addresses at build time for whatever --base
+; it's given, provided that value matches BASIC_PROGRAM_START below
+; exactly. There is nothing for a runtime relink pass to fix. (This
+; finding predates the approach change above and remains true
+; regardless of it - tools/tokenizer.py's --base handling is still
+; load-bearing.)
+;
+; Things tried and rejected along the way, each confirmed
+; empirically rather than just reasoned about:
+;   - $5254 (points CHRGET at TXTTAB-1): wrong for starting program
+;     execution, since TXTTAB-1's next byte is the link-pointer
+;     header, not a token. Produced SYNTAX ERROR.
+;   - $51F8 as CLR's address: turned out to not be a routine entry
+;     at all - live disassembly (d 51d6 5220) showed it's the
+;     middle of a BNE instruction inside NEW's own code. Produced
+;     a CPU JAM, but NOT because CLR-style code is unsafe to JSR
+;     into (see below) - simply because $51F8 itself was wrong.
+;   - $5A81 alone, no CURLIN/TXTPTR setup first: SYNTAX ERROR -
+;     live disassembly showed $5A81 is a small shared tail (reset
+;     3 collision flags, call SETMSG, RTS) meant to be JSR'd into
+;     after TXTPTR/CURLIN are already set, not a valid JMP target
+;     on its own. Not used at all now.
+BASIC_CLR   = $51F3    ; corrected CLR entry - where NEW itself does
+                        ; JSR $5254 before falling into the shared
+                        ; reset tail (VARTAB->ARYTAB/STREND, PUDEF
+                        ; defaults restored, runtime stack pointer
+                        ; reset to $09FF, CONT-disable flag cleared).
+                        ; Confirmed via disassembly (d 5220 5260)
+                        ; that this tail deliberately PRESERVES the
+                        ; caller's return address across its own
+                        ; stack-pointer reset (PLA/TAY/PLA to capture
+                        ; it before TXS, PHA/TYA/PHA to restore it
+                        ; after) - a real JSR/RTS pair is genuinely
+                        ; safe here, unlike what the $51F8 CPU JAM
+                        ; seemed to suggest. $51F3 is after NEW's
+                        ; program-erasing prefix (which would wipe
+                        ; our tokenized program - avoided) and before
+                        ; the reset logic itself. Not yet
+                        ; independently confirmed working as a
+                        ; standalone entry - next empirical test.
+BASIC_RELINK = $4F4F   ; relinks the program's line-pointer chain AND
+                        ; sets TEXT_TOP ($1210/$1211, "end of program"
+                        ; pointer) in one combined routine. Confirmed
+                        ; via disassembly (d 4f4f 4f90) and via tracing
+                        ; real RUN-adjacent ROM code that calls this
+                        ; address immediately after CLR ($51F3, the
+                        ; same address this file uses) - strong,
+                        ; independent evidence this belongs right after
+                        ; CLR in ml_entry_c128 too. Fixes a real bug:
+                        ; without it, TEXT_TOP was left stale (from
+                        ; whatever program, if any, occupied memory
+                        ; before), and SYS into the stub silently did
+                        ; nothing - typing RUN by hand afterward worked,
+                        ; since real RUN goes through this same call.
+                        ; The relink half is a no-op for us (tokenizer
+                        ; already writes correct links) but harmless to
+                        ; run anyway. Not yet independently confirmed
+                        ; working as the fix - next empirical test.
+BASIC_GONE  = $4A9F    ; JMP ($0308) - an indirect jump through a
+                        ; vector that defaults to the very next ROM
+                        ; instruction with no wedge installed
+                        ; (confirmed via disassembly, d 4a90 4b10) -
+                        ; structurally correct (confirmed reachable
+                        ; via VICE breakpoints, all pointer setup
+                        ; intact) but NOT what ml_entry_c128 actually
+                        ; jumps to - see BASIC_GONE_MAIN below. Kept
+                        ; here for reference/documentation.
+BASIC_GONE_MAIN = $4AF6 ; what real RUN-adjacent code actually jumps
+                        ; to (confirmed via disassembly, d 5a9f 5ab2) -
+                        ; skips the collision-flag-dispatch block at
+                        ; $4AA2-$4AEE that $4A9F's vector leads into.
+                        ; Switched to this after $4A9F, despite being
+                        ; structurally reachable, still left SYS
+                        ; silently returning to READY. Confirmed
+                        ; structurally reachable too (breakpoint hit
+                        ; cleanly), but NOT what ml_entry_c128 actually
+                        ; jumps to either - see BASIC_GONE_ENTRY below.
+                        ; Kept here for reference/documentation.
+BASIC_GONE_ENTRY = $4AF9 ; skips $4AF6's own first action, JSR $4BB5 -
+                        ; a STOP-key-check preamble ($4BB5->$9293->
+                        ; $A845->KERNAL STOP via $FFE1->back) that live
+                        ; tracing showed corrupts TXTPTR ($3D/$3E)
+                        ; before it's ever used, despite direct memory
+                        ; inspection (m 3d 3e) confirming it was
+                        ; genuinely correct right at $4AF6. Real RUN
+                        ; goes through $4AF6 (and thus this same
+                        ; preamble) and works fine, so whatever it does
+                        ; to survive this isn't something ml_entry_c128
+                        ; replicates - simpler to skip the preamble
+                        ; entirely and jump straight to where TXTPTR
+                        ; gets used ($4B34, via the BIT $7F branch,
+                        ; immediately after this entry point). Not yet
+                        ; independently confirmed working - next
+                        ; empirical test.
+BASIC_LINE_READ = $03C9 ; NOT a self-incrementing CHRGET, despite the
+                        ; name this constant originally had. Live
+                        ; single-step tracing (d 4af6 onward, full
+                        ; instruction trace through an actual SYS call)
+                        ; showed its real body: STA $FF01 / LDA ($3D),Y
+                        ; / STA $FF03 / RTS - that's LDA (TXTPTR),Y with
+                        ; Y supplied by the CALLER, not an auto-advancing
+                        ; fetch. Used by the "advance to next program
+                        ; line" logic (d 4b10 4b2e) to read the link/
+                        ; lineno header fields at explicit Y offsets
+                        ; (0, 2, 3). ml_entry_c128 briefly called this
+                        ; blindly (no Y set first) attempting to prime A
+                        ; before jumping into GONE - wrong on two counts:
+                        ; this isn't the routine GONE's token dispatch
+                        ; relies on, and calling it without setting Y
+                        ; first reads TXTPTR+garbage rather than
+                        ; TXTPTR+0. Removed from ml_entry_c128. Kept
+                        ; defined here since it's real, useful, confirmed
+                        ; ROM behavior - just not the fix it was tried
+                        ; as. The real "GONE assumes A already holds the
+                        ; current character" gap, if it's even the right
+                        ; framing, is still open - see RUN_MODE_FLAG
+                        ; below for what's being tried instead.
+RUN_MODE_FLAG = $7F    ; zero-page mode flag - NOT a symbolic BASIC
+                        ; pointer like the others above, just a single
+                        ; byte real RUN-adjacent code sets before doing
+                        ; anything else (LDA #$40 / STA $7F), confirmed
+                        ; via the original d 5a9f 5ab2 disassembly but
+                        ; not replicated in ml_entry_c128 until this
+                        ; revision. GONE's flow branches on bit 7 of
+                        ; this flag (d 4af6 onward: BIT $7F / BPL). Not
+                        ; yet independently confirmed this is the fix
+                        ; for SYS silently returning to READY - next
+                        ; empirical test.
+BASIC_EDITOR_RESET = $A1A7 ; Real RUN calls this between setting
+                        ; RUN_MODE_FLAG and BASIC_RUN_RESET below -
+                        ; previously left out entirely. Found by
+                        ; reading RUN's actual dispatch-table entry
+                        ; directly rather than continuing to guess:
+                        ; token $8A -> Y=$14 -> two-table lookup at
+                        ; $46FC,Y (low) and $46FD,Y (high), pushed and
+                        ; RTS'd via JMP $0380 (d 4b80 4ba0) -> $5A9B,
+                        ; landing right next to $5A9F, confirming the
+                        ; whole $5A9F-onward sequence this file is
+                        ; built around is genuinely on RUN's real path.
+                        ; That address range's own disassembly
+                        ; (d 5a9f 5ab2) showed JSR $A1A7 as the very
+                        ; next call after setting RUN_MODE_FLAG=$40,
+                        ; which had been skipped. d a1a7 a1e0 shows it
+                        ; doesn't obviously touch TXTPTR/CURLIN
+                        ; directly - looks like general editor/
+                        ; interrupt-state reset (clears $011D, various
+                        ; flag work via $A667/$A750/$A3C1) - but
+                        ; "safe to skip" has been wrong before
+                        ; (BASIC_RUN_RESET looked skippable too).
+BASIC_RUN_RESET = $5A81 ; NOT just the "shared tail" this was first
+                        ; characterized as - live tracing (a second
+                        ; d 4af6-onward single-step session) showed
+                        ; RUN_MODE_FLAG still held bit 7 set at the
+                        ; $4AF9 check despite ml_entry_c128 setting it
+                        ; to $40 first - meaning something overwrites
+                        ; it before that check is reached. Re-reading
+                        ; the original d 5a81 5ac0 disassembly: real
+                        ; RUN calls THIS address immediately after
+                        ; setting $7F=$40, and this routine itself does
+                        ; LDA #$80 / STA $7F - overwriting it to $80
+                        ; (bit 7 SET) before falling through to CLR.
+                        ; So $7F=$80, not $40, is very likely the state
+                        ; real RUN actually carries forward - the bit-7
+                        ; -set branch at $4AF9 may be the CORRECT path,
+                        ; not a bug. This routine also resets $74/$75/
+                        ; $127F/$F6/$1276-$1278 - real setup, not just
+                        ; SETMSG. Ends with JMP $FF90 (SETMSG) rather
+                        ; than RTS, but that's still safely JSR-able:
+                        ; SETMSG's own RTS returns to whoever called
+                        ; this routine, since JMP doesn't touch the
+                        ; stack. Not yet independently confirmed this
+                        ; explains the SYS bug - next empirical test.
+
+; --- KERNAL vectors used by the disk save/load routine ---
+; Byte-identical across the 8-bit Commodore line, confirmed - carries
+; over unchanged from constants.asm. Included here too so this file
+; is self-contained for the C128 build.
+KERNAL_SETLFS = $FFBA
+KERNAL_SETNAM = $FFBD
+KERNAL_LOAD   = $FFD5
+KERNAL_SAVE   = $FFD8
+KERNAL_READST = $FFB7  ; disk error-channel check - not used by the old
+                        ; tape routine, needed for the new disk one
+
+; --- Game entry / layout (C128 bank 0) — FINALIZED ---
+; Full reasoning for this layout, including why the naive "fit
+; everything below $1C00" framing was wrong and how the shortfall
+; was resolved, is in the plan doc. Three things made this work:
+;   1. No requirement to fit below C128's own default TXTTAB
+;      ($1C01) at all - ml_entry_c128 relocates TXTTAB wherever we
+;      want anyway, so fixed assets can extend upward as needed.
+;   2. Only $1200-$121F (32 bytes) is genuinely off-limits, not the
+;      full $1200-$12FF (256 bytes) originally assumed - $1220-$12FF
+;      holds state for BASIC-7.0-only statements (SOUND/PLAY/FILTER/
+;      ENVELOPE/WINDOW/SPRDEF/COLLISION) that our tokenized program
+;      structurally cannot invoke (§1: only tokens up to $CB are
+;      possible). Treated as spare/unconfirmed below, not built on
+;      directly, since CLR's full side-effect footprint beyond what
+;      was directly observed in disassembly isn't independently
+;      verified.
+;   3. Checked the actual BASIC source for hardcoded addresses into
+;      the wall-tile/charset/saveload/lookup-table region: none
+;      exist (only the two old tape SYS4640/SYS4676 calls, already
+;      being replaced, and one dead variable assignment that's never
+;      read again). These regions can be freely reorganized.
+;
+; CORRECTION: the game-state region isn't just a formula-derived
+; chain of addresses - it's backed by a real 1025-byte binary blob
+; (src/include/game_state_1C00.bin in the C64 build), !binary'd in
+; at $1C00, whose LAST 513 bytes are D_ARRAY's actual pre-loaded
+; dungeon exit-matrix data - the one part of this region nothing in
+; the BASIC source ever writes at runtime. An earlier version of
+; this file re-derived NAME/MS/T/TR/R/D spacing independently
+; (based on keeping SR=MS-30 in bounds) without accounting for this
+; blob's fixed internal structure - discovered via a BAD SUBSCRIPT
+; error during actual gameplay testing (game_harness.asm never
+; loaded this blob at all, so D_ARRAY was reading uninitialized RAM
+; the whole time navigation "worked" by coincidence). Fixed by
+; preserving the blob's exact internal offsets, relocated wholesale:
+GAME_STATE_START    = $0B00   ; = NAME_BUFFER (offset $000 in the blob)
+                                ; Same $0B00 as before - just the
+                                ; internal sub-offsets below changed.
+                                ; No VIC-visibility requirement - safe
+                                ; here (confirmed-free, only touched by
+                                ; the automatic disk-boot check during
+                                ; RESET, before our program runs).
+GAME_STATE_MS       = $0BC3   ; offset $0C3 in the blob
+GAME_STATE_T        = $0C27   ; offset $127
+GAME_STATE_TR       = $0C8B   ; offset $18B
+GAME_STATE_R        = $0C9D   ; offset $19D
+GAME_STATE_D        = $0D00   ; offset $200 - D_ARRAY, 513 bytes to
+                                ; end of blob at $0F01. These four
+                                ; labels are for reference/documentation -
+                                ; the BASIC source computes them itself
+                                ; via the same relative-offset formula
+                                ; it always used (R=D-99 etc.), only the
+                                ; top-level D= literal needs to match
+                                ; GAME_STATE_D above.
+; game_state_1C00.bin (1025 bytes, unmodified - only its LOAD ADDRESS
+; changes, not its contents) needs to be !binary'd in at
+; GAME_STATE_START for D_ARRAY to hold real dungeon data rather than
+; uninitialized RAM. Not yet wired into constants_c128.asm's own
+; build - currently added directly in game_harness.asm; needs a
+; proper include (e.g. game_state_c128.asm mirroring the C64 build's
+; game_state.asm) before this becomes part of the real build, not
+; just the test harness.
+LOOKUP_TABLE_START  = $0F04   ; unresolved lookup/translation table,
+                                ; 416 bytes, carried over as-is - still
+                                ; an open item (see plan doc) but its
+                                ; address doesn't depend on resolving
+                                ; that. Moved from $0F00 to $0F04 (3-byte
+                                ; gap after the game-state blob, which
+                                ; is 1025 bytes - one more than the
+                                ; earlier 1024-byte estimate).
+ML_SAVELOAD_C128_START = $10A4 ; disk save/load routine - see
+                                ; ml_saveload_c128.asm. SYS 4260
+                                ; (decimal for $10A4) to save.
+                                ; RELOCATED from $1C00 - a real bug,
+                                ; not just a reshuffle. $1C00 sits
+                                ; immediately next to $1C01, C128's
+                                ; DEFAULT COLD-BOOT TXTTAB value.
+                                ; Confirmed via live tracing: BASIC's
+                                ; own LOAD command runs its standard
+                                ; post-load housekeeping (calling
+                                ; BASIC_RELINK, $4F4F) immediately
+                                ; after the file transfers - BEFORE
+                                ; SYS is ever typed, meaning BEFORE
+                                ; ml_entry_c128 has set TXTTAB to our
+                                ; real program's address. At that
+                                ; moment TXTTAB still holds $1C01, so
+                                ; RELINK walks byte-by-byte from there
+                                ; treating our raw 6502 machine code as
+                                ; if it were BASIC token/line
+                                ; structure, corrupting it. This had
+                                ; never surfaced before because $1C00-
+                                ; $1FFF was previously just zero-filled
+                                ; padding - RELINK would hit a zero
+                                ; byte at $1C01 immediately and stop
+                                ; harmlessly. Only became dangerous once
+                                ; real, non-zero code was placed exactly
+                                ; there. Moved to $10A4 instead (right
+                                ; after LOOKUP_TABLE_START, previously
+                                ; spare) - safely below $1C01, so
+                                ; RELINK's forward walk from there still
+                                ; hits zero immediately, same as every
+                                ; region below $1C01 always has.
+ML_LOAD_C128_START = ML_SAVELOAD_C128_START + $40  ; $10E4 = 4324
+                                ; decimal. SYS 4324 to load.
+LOAD_ERROR_FLAG = ML_SAVELOAD_C128_START + $80     ; $1124 = 4388
+                                ; decimal. PEEK this after SYS 4324 -
+                                ; 0 = success, 1 = failed (file not
+                                ; found or disk error). New addition,
+                                ; not present in the tape version.
+; $1220-$12FF (224 bytes) remains spare - free per the reasoning
+; above but not yet assigned to anything.
+; $1200-$121F (32 bytes) is permanently off-limits - CONT bookkeeping,
+; current error/line number, TRAP target, end-of-program/top-of-memory
+; pointers, RND seed. Touched by our own CLR call regardless of what
+; the game logic does.
+SPRITE_POOL_START   = $1300   ; 36 sprite blocks, 64-byte aligned
+                                ; ($1300 mod 64 = 0, confirmed).
+                                ; Moved off $0840 (BASIC's own runtime
+                                ; stack on C128 - forced move, see plan
+                                ; doc section 2). Backed by the real
+                                ; asset sprites_0840.bin (2304 bytes,
+                                ; unmodified - same bytes as the C64
+                                ; build, just loaded at a new address).
+SPRITE_POOL_END     = $1C00
+; Sprite pointer block numbers: C64 pool started at $0840 (block 33,
+; $0840/64=33); C128 pool starts at $1300 (block 76, $1300/64=76).
+; Every sprite-pointer POKE/PEEK block-number literal in the BASIC
+; source needed +43 added (76-33=43) - confirmed applied across all
+; 38 affected lines (POKE2040-2047 and PEEK(2040-2047) comparisons),
+; verified none of the shared-line non-sprite-pointer POKEs (VS+28,
+; VS+39, VS+41, etc. on the same lines) were touched.
+SPRITE_POOL_BLOCK_DELTA = 43
+; NAME_BUFFER and FILENAME_LEN are no longer defined here - the
+; filename "DUNGEON.SAV" is now hardcoded directly in
+; ml_saveload_c128.asm as a literal string that SETNAM points
+; at, eliminating the BASIC-side POKE chain and any potential
+; ZP-scratch corruption of the filename pointer between SETNAM
+; and the actual IEC transmission.
+CHARSET_COPY_START  = $2000   ; REVERTED to unmodified charset_1400.bin.
+                                ; Two earlier versions of this file both
+                                ; tried to combine wall_tiles_1140.bin
+                                ; with the main charset - first as
+                                ; sequential separate blocks (3289 bytes,
+                                ; wrong - shifted every character code by
+                                ; 27, breaking blank space), then as a
+                                ; single combined binary with wall_tiles
+                                ; patched in at offset $140 (character 40,
+                                ; theorized from C64 address math: wall
+                                ; tiles at $1140, default char-base
+                                ; $1000). The second attempt broke digits
+                                ; and "?" (screen codes 48-57 and 63, both
+                                ; within the patched 40-64 range) - and a
+                                ; direct C64 comparison disproved the
+                                ; theory outright: on the real C64 build,
+                                ; $D018=$15 (char-base $1000, as assumed)
+                                ; and wall_tiles genuinely sits unchanged
+                                ; at $1140 (confirmed via memory dump)
+                                ; during the exact screen where digits
+                                ; display correctly - meaning wall_tiles'
+                                ; real mechanism isn't "read in place by
+                                ; the VIC at that address" the way assumed.
+                                ; No ML copy routine exists in the project
+                                ; to move it elsewhere either (checked).
+                                ; The project's own README already flagged
+                                ; wall_tiles' semantics as unresolved
+                                ; ("Structural, semantics open") - this
+                                ; was an unverified assumption built on an
+                                ; already-open question, not a confirmed
+                                ; mechanism. Reverted rather than guessed
+                                ; a third time: room rendering was already
+                                ; reported working well BEFORE this patch
+                                ; was ever introduced, so the patch fixed
+                                ; nothing that was actually broken while
+                                ; breaking something that was working.
+                                ; wall_tiles_1140.bin is dropped from the
+                                ; build entirely for now - its real
+                                ; purpose remains an open item (see plan
+                                ; doc), not force-fit into a guessed
+                                ; location again.
+ML_ENTRY_STUB_START = $2CE0   ; 128 bytes reserved (current stub is 43
+                                ; bytes, confirmed via smoke test - room
+                                ; to grow once sprite-pointer setup,
+                                ; CHAREN, and $12FD get added for the
+                                ; real game, none of which the smoke
+                                ; test needed).
+BASIC_PROGRAM_START = $2D60   ; main game program. Keep this and
+                                ; tools/tokenizer.py's --base argument
+                                ; in sync always - see the LINKPRG note
+                                ; above for why that matters.
+}
